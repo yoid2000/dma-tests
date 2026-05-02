@@ -10,6 +10,11 @@
 
 set -euo pipefail
 
-source /INS/syndiffix/work/paul/github/dma-tests/.venv/bin/activate
+VENV_PYTHON="/INS/syndiffix/work/paul/github/dma-tests/.venv/bin/python"
 
-python /INS/syndiffix/work/paul/github/dma-tests/dma/label.py "${SLURM_ARRAY_TASK_ID}"
+if [[ ! -x "${VENV_PYTHON}" ]]; then
+	echo "ERROR: venv python not found or not executable: ${VENV_PYTHON}" >&2
+	exit 1
+fi
+
+"${VENV_PYTHON}" /INS/syndiffix/work/paul/github/dma-tests/dma/label.py "${SLURM_ARRAY_TASK_ID}"
