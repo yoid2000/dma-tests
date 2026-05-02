@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
-#SBATCH --time=48:00:00
+#SBATCH --time=24:00:00
 
 set -euo pipefail
 
@@ -15,7 +15,6 @@ cd "${SCRIPT_DIR}"
 
 mkdir -p logs
 
-# Activate your environment here if needed, for example:
-# source ../.venv/bin/activate
+source /INS/syndiffix/work/paul/github/dma-tests/.venv/bin/activate
 
 python label.py "${SLURM_ARRAY_TASK_ID}"
