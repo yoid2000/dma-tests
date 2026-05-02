@@ -15,7 +15,11 @@ from pathlib import Path
 import re
 from typing import Any
 
-from email_validator import EmailNotValidError, validate_email
+try:
+    from email_validator import EmailNotValidError, validate_email
+except ModuleNotFoundError:
+    EmailNotValidError = ValueError
+    validate_email = None
 import phonenumbers
 import pandas as pd
 import probablepeople
@@ -221,6 +225,12 @@ def normalize_email_label(span_text: str) -> str | None:
     """
     candidate = span_text.strip().strip(".,;:()[]{}<>\"'")
     if "@" not in candidate:
+        return None
+
+    if validate_email is None:
+        # Fallback when email_validator is unavailable on a worker node.
+        if re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", candidate):
+            return candidate.lower()
         return None
 
     try:
