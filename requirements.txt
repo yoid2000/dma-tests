@@ -1,11 +1,10 @@
 pandas
 pyarrow
 matplotlib
+numpy
 gliner
 usaddress
 probablepeople
 email-validator
 phonenumbers
 python-stdnum
-presidio-analyzer
-spacy
