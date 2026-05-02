@@ -11,6 +11,7 @@
 
 set -euo pipefail
 
+
 VENV_DIR="/INS/syndiffix/work/paul/github/dma-tests/.venv"
 VENV_PYTHON="${VENV_DIR}/bin/python"
 LABEL_SCRIPT="/INS/syndiffix/work/paul/github/dma-tests/dma/label.py"
