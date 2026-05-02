@@ -24,8 +24,6 @@ unset PYTHONPATH
 
 echo "Running on host: $(hostname)"
 echo "Python executable: ${VENV_PYTHON}"
-"${VENV_PYTHON}" -m pip --version
-"${VENV_PYTHON}" -m pip list | grep -i "email\|validator" || true
 "${VENV_PYTHON}" -c "import sys, site; print('sys.executable=', sys.executable); print('sys.path='); [print('  ' + p) for p in sys.path]; print('sitepackages=', site.getsitepackages())"
 "${VENV_PYTHON}" -c "import importlib.util; spec = importlib.util.find_spec('email_validator'); print('find_spec(email_validator)=', spec)"
 "${VENV_PYTHON}" -c "import email_validator; print('email_validator=', email_validator.__file__)"
