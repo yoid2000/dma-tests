@@ -4,8 +4,8 @@
 #SBATCH --error=logs/label_%A_%a.err
 #SBATCH --array=0-199%200
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=24G
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=10G
 #SBATCH --time=24:00:00
 #SBATCH --export=ALL
 
