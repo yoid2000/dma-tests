@@ -11,7 +11,8 @@
 
 set -euo pipefail
 
-VENV_PYTHON="/INS/syndiffix/work/paul/github/dma-tests/.venv/bin/python"
+VENV_DIR="/INS/syndiffix/work/paul/github/dma-tests/.venv"
+VENV_PYTHON="${VENV_DIR}/bin/python"
 LABEL_SCRIPT="/INS/syndiffix/work/paul/github/dma-tests/dma/label.py"
 
 if [[ ! -x "${VENV_PYTHON}" ]]; then
@@ -20,12 +21,17 @@ if [[ ! -x "${VENV_PYTHON}" ]]; then
 fi
 
 unset PYTHONHOME
-unset PYTHONPATH
+
+source "${VENV_DIR}/bin/activate"
+
+PY_MINOR="$(${VENV_PYTHON} -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+VENV_SITE_PACKAGES="${VENV_DIR}/lib/python${PY_MINOR}/site-packages"
+if [[ -d "${VENV_SITE_PACKAGES}" ]]; then
+	export PYTHONPATH="${VENV_SITE_PACKAGES}${PYTHONPATH:+:${PYTHONPATH}}"
+fi
 
 echo "Running on host: $(hostname)"
 echo "Python executable: ${VENV_PYTHON}"
-"${VENV_PYTHON}" -c "import sys, site; print('sys.executable=', sys.executable); print('sys.path='); [print('  ' + p) for p in sys.path]; print('sitepackages=', site.getsitepackages())"
-"${VENV_PYTHON}" -c "import importlib.util; spec = importlib.util.find_spec('email_validator'); print('find_spec(email_validator)=', spec)"
-"${VENV_PYTHON}" -c "import email_validator; print('email_validator=', email_validator.__file__)"
+"${VENV_PYTHON}" -c "import sys; print('sys.executable=', sys.executable); import email_validator; print('email_validator=', email_validator.__file__)"
 
 "${VENV_PYTHON}" "${LABEL_SCRIPT}" "${SLURM_ARRAY_TASK_ID}"
