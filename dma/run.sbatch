@@ -10,12 +10,6 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK_DIR="${SLURM_SUBMIT_DIR:-${SCRIPT_DIR}}"
-cd "${WORK_DIR}"
-
-mkdir -p logs
-
 source /INS/syndiffix/work/paul/github/dma-tests/.venv/bin/activate
 
-python "${SCRIPT_DIR}/label.py" "${SLURM_ARRAY_TASK_ID}"
+python /INS/syndiffix/work/paul/github/dma-tests/dma/label.py "${SLURM_ARRAY_TASK_ID}"
