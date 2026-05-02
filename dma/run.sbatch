@@ -20,18 +20,4 @@ if [[ ! -x "${VENV_PYTHON}" ]]; then
 	exit 1
 fi
 
-unset PYTHONHOME
-
-source "${VENV_DIR}/bin/activate"
-
-PY_MINOR="$(${VENV_PYTHON} -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-VENV_SITE_PACKAGES="${VENV_DIR}/lib/python${PY_MINOR}/site-packages"
-if [[ -d "${VENV_SITE_PACKAGES}" ]]; then
-	export PYTHONPATH="${VENV_SITE_PACKAGES}${PYTHONPATH:+:${PYTHONPATH}}"
-fi
-
-echo "Running on host: $(hostname)"
-echo "Python executable: ${VENV_PYTHON}"
-"${VENV_PYTHON}" -c "import sys; print('sys.executable=', sys.executable); import email_validator; print('email_validator=', email_validator.__file__)"
-
 "${VENV_PYTHON}" "${LABEL_SCRIPT}" "${SLURM_ARRAY_TASK_ID}"
