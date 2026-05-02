@@ -1,0 +1,11 @@
+pandas
+pyarrow
+matplotlib
+gliner
+usaddress
+probablepeople
+email-validator
+phonenumbers
+python-stdnum
+presidio-analyzer
+spacy
