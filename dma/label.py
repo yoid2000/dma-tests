@@ -67,6 +67,22 @@ CREDIT_CARD_LABEL = "credit_card_number"
 PHONE_LABEL = "phone_number"
 
 
+def coerce_query_labels(value: Any) -> list[dict[str, Any]]:
+    """Normalize parquet-loaded label containers to plain Python lists."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        converted = tolist()
+        if isinstance(converted, list):
+            return converted
+
+    return []
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -514,9 +530,7 @@ def create_labeled_parquet(
     print(f"Loading raw data from: {raw_path}")
     raw_df = pd.read_parquet(raw_path)
     labeled_df = raw_df.merge(labels_df, on="Query", how="left")
-    labeled_df["QueryLabels"] = labeled_df["QueryLabels"].apply(
-        lambda value: value if isinstance(value, list) else []
-    )
+    labeled_df["QueryLabels"] = labeled_df["QueryLabels"].apply(coerce_query_labels)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     labeled_df.to_parquet(output_path, index=False)

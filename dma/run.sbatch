@@ -1,24 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=aol-label
-#SBATCH --output=logs/label_%A_%a.out
-#SBATCH --error=logs/label_%A_%a.err
-#SBATCH --array=0-199%200
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=20G
-#SBATCH --time=24:00:00
-#SBATCH --export=ALL
-
-set -euo pipefail
-
-
-VENV_DIR="/INS/syndiffix/work/paul/github/dma-tests/.venv"
-VENV_PYTHON="${VENV_DIR}/bin/python"
-LABEL_SCRIPT="/INS/syndiffix/work/paul/github/dma-tests/dma/label.py"
-
-if [[ ! -x "${VENV_PYTHON}" ]]; then
-	echo "ERROR: venv python not found or not executable: ${VENV_PYTHON}" >&2
-	exit 1
-fi
-
-"${VENV_PYTHON}" "${LABEL_SCRIPT}" "${SLURM_ARRAY_TASK_ID}"
+#SBATCH --job-name=116_recon_test
+#SBATCH --output=/INS/syndiffix/work/paul/github/dma-tests/dma/logs/job_116_%A_%a.out
+#SBATCH --error=/INS/syndiffix/work/paul/github/dma-tests/dma/logs/job_116_%A_%a.err
+#SBATCH --time=1440
+#SBATCH --mem=10G
+#SBATCH --cpus-per-task=1
+#SBATCH --array=0-199
+arrayNum="${SLURM_ARRAY_TASK_ID}"
+source /INS/syndiffix/work/paul/github/dma-tests/.venv/bin/activate
+python /INS/syndiffix/work/paul/github/dma-tests/dma/label.py $arrayNum
