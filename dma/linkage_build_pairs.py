@@ -2,7 +2,7 @@
 Build labeled query-pair training data for user-linkage modeling.
 
 Inputs:
-- raw.parquet with columns: AnonID, Query, QueryTime
+- labeled.parquet with columns: AnonID, Query, QueryTime, ClickURL, QueryLabels
 - linkage_work/train_users.parquet from linkage_prepare.py
 
 Outputs (under --out-dir):
@@ -18,22 +18,24 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-import re
-
-import urllib.parse
 
 import numpy as np
 import pandas as pd
 import pyarrow.compute as pc
 import pyarrow.dataset as ds
 
+from linkage_feature_utils import (
+    build_label_pair_features,
+    build_label_summary,
+    coerce_query_labels,
+    extract_domain,
+    tokenize,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_RAW_PATH = BASE_DIR / "raw.parquet"
+DEFAULT_LABELED_PATH = BASE_DIR / "labeled.parquet"
 DEFAULT_TRAIN_USERS_PATH = BASE_DIR / "linkage_work" / "train_users.parquet"
 DEFAULT_OUT_DIR = BASE_DIR / "linkage_work"
-
-TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 
 
 @dataclass
@@ -49,10 +51,12 @@ def parse_args() -> argparse.Namespace:
         description="Build positive and hard-negative query pairs for linkage training."
     )
     parser.add_argument(
+        "--labeled-path",
         "--raw-path",
+        dest="labeled_path",
         type=Path,
-        default=DEFAULT_RAW_PATH,
-        help=f"Path to raw.parquet (default: {DEFAULT_RAW_PATH}).",
+        default=DEFAULT_LABELED_PATH,
+        help=f"Path to labeled.parquet (default: {DEFAULT_LABELED_PATH}).",
     )
     parser.add_argument(
         "--train-users-path",
@@ -110,15 +114,15 @@ def load_train_users(path: Path) -> np.ndarray:
     return ids
 
 
-def load_train_queries(raw_path: Path, train_user_ids: np.ndarray) -> pd.DataFrame:
-    if not raw_path.exists():
-        raise FileNotFoundError(f"raw parquet not found: {raw_path}")
+def load_train_queries(labeled_path: Path, train_user_ids: np.ndarray) -> pd.DataFrame:
+    if not labeled_path.exists():
+        raise FileNotFoundError(f"labeled parquet not found: {labeled_path}")
 
-    dataset = ds.dataset(raw_path.as_posix(), format="parquet")
+    dataset = ds.dataset(labeled_path.as_posix(), format="parquet")
     filter_expr = pc.is_in(ds.field("AnonID"), value_set=pa_array_int64(train_user_ids))
 
     table = dataset.to_table(
-        columns=["AnonID", "Query", "QueryTime", "ClickURL"],
+        columns=["AnonID", "Query", "QueryTime", "ClickURL", "QueryLabels"],
         filter=filter_expr,
     )
     df = table.to_pandas(types_mapper=pd.ArrowDtype)
@@ -127,6 +131,10 @@ def load_train_queries(raw_path: Path, train_user_ids: np.ndarray) -> pd.DataFra
     df["Query"] = df["Query"].astype("string")
     df["QueryTime"] = pd.to_datetime(df["QueryTime"], errors="coerce")
     df["ClickURL"] = df["ClickURL"].astype("string").fillna("")
+    if "QueryLabels" in df.columns:
+        df["QueryLabels"] = df["QueryLabels"].apply(coerce_query_labels)
+    else:
+        df["QueryLabels"] = [[] for _ in range(len(df))]
 
     df = df.dropna(subset=["AnonID", "Query", "QueryTime"]).copy()
     df["AnonID"] = df["AnonID"].astype("int64")
@@ -151,21 +159,6 @@ def cap_queries_per_user(df: pd.DataFrame, cap: int) -> pd.DataFrame:
     df["_rank"] = df.groupby("AnonID").cumcount()
     df = df[df["_rank"] < cap].drop(columns=["_rank"]).reset_index(drop=True)
     return df
-
-
-def tokenize(text: str) -> set[str]:
-    return {tok for tok in TOKEN_RE.findall(text.lower()) if tok}
-
-
-def extract_domain(url: str) -> str:
-    """Return the netloc of a URL, lowercased. Empty string if not parseable."""
-    if not url:
-        return ""
-    try:
-        netloc = urllib.parse.urlparse(url).netloc
-        return netloc.lower()
-    except Exception:
-        return ""
 
 
 def jaccard(a: set[str], b: set[str]) -> float:
@@ -272,6 +265,7 @@ def build_pair_features(
     query_days: np.ndarray,
     token_sets: list[set[str]],
     click_urls: np.ndarray,
+    label_summaries: list,
     label: int,
 ) -> dict[str, int | float | str]:
     qa = str(queries[idx_a])
@@ -300,7 +294,7 @@ def build_pair_features(
     domain_b = extract_domain(url_b)
     url_domain_match = int(bool(domain_a) and bool(domain_b) and domain_a == domain_b)
 
-    return {
+    row = {
         "row_id_a": int(idx_a),
         "row_id_b": int(idx_b),
         "label": int(label),
@@ -324,6 +318,8 @@ def build_pair_features(
         "url_exact_match": url_exact_match,
         "url_domain_match": url_domain_match,
     }
+    row.update(build_label_pair_features(label_summaries[idx_a], label_summaries[idx_b]))
+    return row
 
 
 def main() -> None:
@@ -350,8 +346,8 @@ def main() -> None:
     train_user_ids = load_train_users(args.train_users_path)
     print(f"Loaded train users: {train_user_ids.size:,}")
 
-    print(f"Loading train queries from: {args.raw_path}")
-    df = load_train_queries(args.raw_path, train_user_ids)
+    print(f"Loading train queries from: {args.labeled_path}")
+    df = load_train_queries(args.labeled_path, train_user_ids)
     print(f"Queried rows for train users: {len(df):,}")
 
     print(f"Applying per-user cap: {args.max_queries_per_user}")
@@ -366,8 +362,10 @@ def main() -> None:
     queries = df["Query"].astype("string").to_numpy()
     query_days = df["QueryDay"].to_numpy(dtype="datetime64[D]")
     click_urls = df["ClickURL"].fillna("").astype(str).to_numpy()
+    query_labels = df["QueryLabels"].tolist()
 
     token_sets = [tokenize(str(text)) for text in queries]
+    label_summaries = [build_label_summary(coerce_query_labels(value)) for value in query_labels]
 
     day_values = pd.Series(df["QueryDay"].to_numpy()).astype("datetime64[ns]")
     day_to_indices: dict[pd.Timestamp, np.ndarray] = {}
@@ -400,6 +398,7 @@ def main() -> None:
                     query_days=query_days,
                     token_sets=token_sets,
                     click_urls=click_urls,
+                    label_summaries=label_summaries,
                     label=1,
                 )
             )
@@ -431,6 +430,7 @@ def main() -> None:
                         query_days=query_days,
                         token_sets=token_sets,
                         click_urls=click_urls,
+                        label_summaries=label_summaries,
                         label=0,
                     )
                 )
@@ -446,7 +446,9 @@ def main() -> None:
         subset=["row_id_a", "row_id_b", "label"], keep="first"
     ).reset_index(drop=True)
 
-    query_out = df[["row_id", "AnonID", "Query", "QueryTime", "QueryDay", "ClickURL"]].copy()
+    query_out = df[
+        ["row_id", "AnonID", "Query", "QueryTime", "QueryDay", "ClickURL", "QueryLabels"]
+    ].copy()
 
     query_path = out_dir / "pair_queries.parquet"
     pairs_path = out_dir / "train_pairs.parquet"

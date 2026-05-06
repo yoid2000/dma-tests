@@ -3,7 +3,7 @@ Run constrained group inference for the 50-user linkage setting.
 
 This script:
 1. Loads sampled groups from linkage_work/group_manifest.parquet.
-2. Pulls each group's queries from raw.parquet.
+2. Pulls each group's queries from labeled.parquet.
 3. Builds pair features matching linkage_build_pairs.py.
 4. Scores same-user probabilities with linkage_pair_model.pkl.
 5. Clusters each group to a target number of clusters (default 50).
@@ -21,8 +21,6 @@ import argparse
 import json
 import pickle
 from pathlib import Path
-import re
-import urllib.parse
 
 import numpy as np
 import pandas as pd
@@ -31,14 +29,19 @@ import pyarrow.dataset as ds
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_rand_score
 
+from linkage_feature_utils import (
+    build_label_pair_features,
+    build_label_summary,
+    coerce_query_labels,
+    extract_domain,
+    tokenize,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_RAW_PATH = BASE_DIR / "raw.parquet"
+DEFAULT_LABELED_PATH = BASE_DIR / "labeled.parquet"
 DEFAULT_GROUP_MANIFEST_PATH = BASE_DIR / "linkage_work" / "group_manifest.parquet"
 DEFAULT_MODEL_PATH = BASE_DIR / "linkage_work" / "model" / "linkage_pair_model.pkl"
 DEFAULT_OUT_DIR = BASE_DIR / "linkage_work" / "inference"
-
-TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 
 
 def apply_calibrator(calibrator, base_proba: np.ndarray) -> np.ndarray:
@@ -62,10 +65,12 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument(
+        "--labeled-path",
         "--raw-path",
+        dest="labeled_path",
         type=Path,
-        default=DEFAULT_RAW_PATH,
-        help=f"Path to raw.parquet (default: {DEFAULT_RAW_PATH}).",
+        default=DEFAULT_LABELED_PATH,
+        help=f"Path to labeled.parquet (default: {DEFAULT_LABELED_PATH}).",
     )
     parser.add_argument(
         "--group-manifest-path",
@@ -243,16 +248,23 @@ def load_manifest(path: Path, split: str, max_groups: int) -> pd.DataFrame:
     return manifest
 
 
-def load_group_queries(raw_path: Path, group_users: np.ndarray) -> pd.DataFrame:
-    dataset = ds.dataset(raw_path.as_posix(), format="parquet")
+def load_group_queries(labeled_path: Path, group_users: np.ndarray) -> pd.DataFrame:
+    dataset = ds.dataset(labeled_path.as_posix(), format="parquet")
     filter_expr = pc.is_in(ds.field("AnonID"), value_set=pa_array_int64(group_users))
-    table = dataset.to_table(columns=["AnonID", "Query", "QueryTime", "ClickURL"], filter=filter_expr)
+    table = dataset.to_table(
+        columns=["AnonID", "Query", "QueryTime", "ClickURL", "QueryLabels"],
+        filter=filter_expr,
+    )
 
     df = table.to_pandas(types_mapper=pd.ArrowDtype)
     df["AnonID"] = pd.to_numeric(df["AnonID"], errors="coerce").astype("Int64")
     df["Query"] = df["Query"].astype("string")
     df["QueryTime"] = pd.to_datetime(df["QueryTime"], errors="coerce")
     df["ClickURL"] = df["ClickURL"].astype("string").fillna("")
+    if "QueryLabels" in df.columns:
+        df["QueryLabels"] = df["QueryLabels"].apply(coerce_query_labels)
+    else:
+        df["QueryLabels"] = [[] for _ in range(len(df))]
 
     df = df.dropna(subset=["AnonID", "Query", "QueryTime"]).copy()
     df["AnonID"] = df["AnonID"].astype("int64")
@@ -269,21 +281,6 @@ def cap_queries_per_user(df: pd.DataFrame, cap: int) -> pd.DataFrame:
     out["_rank"] = out.groupby("AnonID").cumcount()
     out = out[out["_rank"] < cap].drop(columns=["_rank"]).reset_index(drop=True)
     return out
-
-
-def tokenize(text: str) -> set[str]:
-    return {tok for tok in TOKEN_RE.findall(text.lower()) if tok}
-
-
-def extract_domain(url: str) -> str:
-    """Return the netloc of a URL, lowercased. Empty string if not parseable."""
-    if not url:
-        return ""
-    try:
-        netloc = urllib.parse.urlparse(url).netloc
-        return netloc.lower()
-    except Exception:
-        return ""
 
 
 def build_pair_feature_dict(
@@ -355,6 +352,7 @@ def score_probability_matrix(
     queries: np.ndarray,
     query_days: np.ndarray,
     click_urls: np.ndarray,
+    query_labels: list[list[dict]],
 ) -> np.ndarray:
     n = len(queries)
     probs = np.eye(n, dtype=np.float64)
@@ -373,6 +371,7 @@ def score_probability_matrix(
     str_queries = [str(q) for q in queries]
     token_sets = [tokenize(q) for q in str_queries]
     str_urls = [str(u) for u in click_urls]
+    label_summaries = [build_label_summary(coerce_query_labels(v)) for v in query_labels]
     domains = [extract_domain(u) for u in str_urls]
     prefix3 = [q[:3].lower() for q in str_queries]
     has_digit = np.array([int(any(ch.isdigit() for ch in q)) for q in str_queries])
@@ -442,6 +441,17 @@ def score_probability_matrix(
             "url_exact_match": url_exact,
             "url_domain_match": url_domain,
         }
+
+        label_pair_rows = [
+            build_label_pair_features(label_summaries[int(ia[k])], label_summaries[int(ja[k])])
+            for k in range(m)
+        ]
+        if label_pair_rows:
+            for feature_name in label_pair_rows[0].keys():
+                feat[feature_name] = np.array(
+                    [row[feature_name] for row in label_pair_rows],
+                    dtype=np.float64,
+                )
 
         missing = [c for c in feature_columns if c not in feat]
         if missing:
@@ -539,14 +549,14 @@ def process_group(
     split_name: str,
     group_id: int,
     group_users: np.ndarray,
-    raw_path: Path,
+    labeled_path: Path,
     feature_columns: list[str],
     model,
     calibrator,
     max_queries_per_user: int,
     target_clusters: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, float | int | str]]:
-    group_df = load_group_queries(raw_path, group_users)
+    group_df = load_group_queries(labeled_path, group_users)
     group_df = cap_queries_per_user(group_df, max_queries_per_user)
 
     group_df = group_df.sort_values("QueryTime", kind="mergesort").reset_index(drop=True)
@@ -586,6 +596,7 @@ def process_group(
     queries = group_df["Query"].astype("string").to_numpy()
     query_days = group_df["QueryDay"].to_numpy(dtype="datetime64[D]")
     click_urls = group_df["ClickURL"].fillna("").astype(str).to_numpy()
+    query_labels = group_df["QueryLabels"].tolist()
 
     probs = score_probability_matrix(
         feature_columns=feature_columns,
@@ -595,6 +606,7 @@ def process_group(
         queries=queries,
         query_days=query_days,
         click_urls=click_urls,
+        query_labels=query_labels,
     )
 
     labels = cluster_from_probabilities(probs, target_clusters=target_clusters)
@@ -661,8 +673,8 @@ def main() -> None:
         )
         return
 
-    if not args.raw_path.exists():
-        raise FileNotFoundError(f"raw.parquet not found: {args.raw_path}")
+    if not args.labeled_path.exists():
+        raise FileNotFoundError(f"labeled.parquet not found: {args.labeled_path}")
 
     artifact = load_model(args.model_path)
     model = artifact["model"]
@@ -699,7 +711,7 @@ def main() -> None:
             split_name=split_name,
             group_id=group_id,
             group_users=user_ids,
-            raw_path=args.raw_path,
+            labeled_path=args.labeled_path,
             feature_columns=feature_columns,
             model=model,
             calibrator=calibrator,

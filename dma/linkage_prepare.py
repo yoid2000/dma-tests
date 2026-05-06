@@ -7,7 +7,7 @@ This script does NOT train a model. It creates:
 
 Example:
     python linkage_prepare.py \
-        --raw-path raw.parquet \
+        --labeled-path labeled.parquet \
         --out-dir linkage_work \
         --min-queries-per-user 20 \
         --max-queries-per-user 5000 \
@@ -15,7 +15,7 @@ Example:
         --val-users 25000 \
         --test-users 5000 \
         --group-size 50 \
-        --val-groups 500 \
+        --val-groups 419 \
         --test-groups 100 \
         --seed 13
 """
@@ -30,7 +30,7 @@ import pandas as pd
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_RAW_PATH = BASE_DIR / "raw.parquet"
+DEFAULT_LABELED_PATH = BASE_DIR / "labeled.parquet"
 DEFAULT_OUT_DIR = BASE_DIR / "linkage_work"
 
 
@@ -41,10 +41,12 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument(
+        "--labeled-path",
         "--raw-path",
+        dest="labeled_path",
         type=Path,
-        default=DEFAULT_RAW_PATH,
-        help=f"Path to raw.parquet (default: {DEFAULT_RAW_PATH}).",
+        default=DEFAULT_LABELED_PATH,
+        help=f"Path to labeled.parquet (default: {DEFAULT_LABELED_PATH}).",
     )
     parser.add_argument(
         "--out-dir",
@@ -91,7 +93,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--val-groups",
         type=int,
-        default=500,
+        default=419,
         help="Number of sampled validation groups.",
     )
     parser.add_argument(
@@ -109,11 +111,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_user_counts(raw_path: Path) -> pd.DataFrame:
-    if not raw_path.exists():
-        raise FileNotFoundError(f"raw.parquet not found: {raw_path}")
+def load_user_counts(labeled_path: Path) -> pd.DataFrame:
+    if not labeled_path.exists():
+        raise FileNotFoundError(f"labeled parquet not found: {labeled_path}")
 
-    df = pd.read_parquet(raw_path, columns=["AnonID"])
+    df = pd.read_parquet(labeled_path, columns=["AnonID"])
     counts = (
         df["AnonID"]
         .dropna()
@@ -193,8 +195,8 @@ def main() -> None:
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Loading AnonID counts from: {args.raw_path}")
-    counts = load_user_counts(args.raw_path)
+    print(f"Loading AnonID counts from: {args.labeled_path}")
+    counts = load_user_counts(args.labeled_path)
 
     eligible = counts[
         (counts["query_count"] >= args.min_queries_per_user)

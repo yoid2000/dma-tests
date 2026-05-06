@@ -24,8 +24,6 @@ from __future__ import annotations
 import argparse
 import json
 import pickle
-import re
-import urllib.parse
 from pathlib import Path
 
 import numpy as np
@@ -33,14 +31,20 @@ import pandas as pd
 import pyarrow.compute as pc
 import pyarrow.dataset as ds
 
+from linkage_feature_utils import (
+    build_label_pair_features,
+    build_label_summary,
+    coerce_query_labels,
+    extract_domain,
+    tokenize,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_RAW_PATH = BASE_DIR / "raw.parquet"
+DEFAULT_LABELED_PATH = BASE_DIR / "labeled.parquet"
 DEFAULT_GROUP_MANIFEST_PATH = BASE_DIR / "linkage_work" / "group_manifest.parquet"
 DEFAULT_MODEL_PATH = BASE_DIR / "linkage_work" / "model" / "linkage_pair_model.pkl"
 DEFAULT_OUT_DIR = BASE_DIR / "linkage_work" / "pair_eval"
 
-TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 _PAIR_BATCH = 500_000
 _TOP_K_PER_GROUP = 500  # top pairs saved per group checkpoint for global top-N
 
@@ -63,10 +67,12 @@ def parse_args() -> argparse.Namespace:
         description="Direct pairwise threshold evaluation (no clustering)."
     )
     parser.add_argument(
+        "--labeled-path",
         "--raw-path",
+        dest="labeled_path",
         type=Path,
-        default=DEFAULT_RAW_PATH,
-        help=f"Path to raw.parquet (default: {DEFAULT_RAW_PATH}).",
+        default=DEFAULT_LABELED_PATH,
+        help=f"Path to labeled.parquet (default: {DEFAULT_LABELED_PATH}).",
     )
     parser.add_argument(
         "--group-manifest-path",
@@ -129,7 +135,7 @@ def parse_args() -> argparse.Namespace:
         choices=["threshold-geometric", "recall-halving"],
         help=(
             "Sweep strategy. threshold-geometric: threshold starts at max(0.3,min-save) "
-            "and moves 10% toward 1.0 until NULL. recall-halving: target recall levels "
+            "and moves 10%% toward 1.0 until NULL. recall-halving: target recall levels "
             "1.0, 0.5, 0.25, ... down to 0."
         ),
     )
@@ -172,19 +178,6 @@ def load_model(path: Path) -> dict:
     return artifact
 
 
-def tokenize(text: str) -> set[str]:
-    return {tok for tok in TOKEN_RE.findall(text.lower()) if tok}
-
-
-def extract_domain(url: str) -> str:
-    if not url:
-        return ""
-    try:
-        return urllib.parse.urlparse(url).netloc.lower()
-    except Exception:
-        return ""
-
-
 def _pa_array_int64(values: np.ndarray):
     import pyarrow as pa
     return pa.array(values, type=pa.int64())
@@ -205,11 +198,11 @@ def load_manifest(path: Path, split: str, max_groups: int) -> pd.DataFrame:
     return manifest
 
 
-def load_group_queries(raw_path: Path, group_users: np.ndarray) -> pd.DataFrame:
-    dataset = ds.dataset(raw_path.as_posix(), format="parquet")
+def load_group_queries(labeled_path: Path, group_users: np.ndarray) -> pd.DataFrame:
+    dataset = ds.dataset(labeled_path.as_posix(), format="parquet")
     filter_expr = pc.is_in(ds.field("AnonID"), value_set=_pa_array_int64(group_users))
     table = dataset.to_table(
-        columns=["AnonID", "Query", "QueryTime", "ClickURL"],
+        columns=["AnonID", "Query", "QueryTime", "ClickURL", "QueryLabels"],
         filter=filter_expr,
     )
     df = table.to_pandas(types_mapper=pd.ArrowDtype)
@@ -217,6 +210,10 @@ def load_group_queries(raw_path: Path, group_users: np.ndarray) -> pd.DataFrame:
     df["Query"] = df["Query"].astype("string")
     df["QueryTime"] = pd.to_datetime(df["QueryTime"], errors="coerce")
     df["ClickURL"] = df["ClickURL"].astype("string").fillna("")
+    if "QueryLabels" in df.columns:
+        df["QueryLabels"] = df["QueryLabels"].apply(coerce_query_labels)
+    else:
+        df["QueryLabels"] = [[] for _ in range(len(df))]
     df = df.dropna(subset=["AnonID", "Query", "QueryTime"]).copy()
     df["AnonID"] = df["AnonID"].astype("int64")
     df = df[df["Query"].str.strip().str.len() > 0].copy()
@@ -243,6 +240,7 @@ def score_all_pairs(
     queries: np.ndarray,
     query_times: np.ndarray,
     click_urls: np.ndarray,
+    query_labels: list[list[dict]],
     min_save_score: float,
     top_k: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame, int, int]:
@@ -271,6 +269,7 @@ def score_all_pairs(
     str_queries = [str(q) for q in queries]
     token_sets = [tokenize(q) for q in str_queries]
     str_urls = [str(u) for u in click_urls]
+    label_summaries = [build_label_summary(coerce_query_labels(v)) for v in query_labels]
     domains = [extract_domain(u) for u in str_urls]
     prefix3 = [q[:3].lower() for q in str_queries]
     has_digit = np.array([int(any(ch.isdigit() for ch in q)) for q in str_queries])
@@ -343,6 +342,17 @@ def score_all_pairs(
             "url_domain_match": url_domain,
         }
 
+        label_pair_rows = [
+            build_label_pair_features(label_summaries[int(ia[k])], label_summaries[int(ja[k])])
+            for k in range(m)
+        ]
+        if label_pair_rows:
+            for feature_name in label_pair_rows[0].keys():
+                feat[feature_name] = np.array(
+                    [row[feature_name] for row in label_pair_rows],
+                    dtype=np.float64,
+                )
+
         missing = [c for c in feature_columns if c not in feat]
         if missing:
             raise ValueError(f"Missing feature columns at inference time: {missing}")
@@ -376,6 +386,8 @@ def score_all_pairs(
         "QueryTime_b": query_times[top_ja],
         "ClickURL_a": [str_urls[k] for k in top_ia],
         "ClickURL_b": [str_urls[k] for k in top_ja],
+        "QueryLabels_a": [query_labels[k] for k in top_ia],
+        "QueryLabels_b": [query_labels[k] for k in top_ja],
     })
 
     return scored_df, top_df, int(n_pairs), total_positives
@@ -397,7 +409,7 @@ def _checkpoint_exists(groups_dir: Path, split_name: str, group_id: int) -> bool
     if not top_path.exists():
         return False
     try:
-        cols = pd.read_parquet(top_path, columns=[]).columns.tolist()
+        cols = pd.read_parquet(top_path).columns.tolist()
         if "ClickURL_a" not in cols or "ClickURL_b" not in cols:
             return False
     except Exception:
@@ -725,8 +737,8 @@ def main() -> None:
         )
         return
 
-    if not args.raw_path.exists():
-        raise FileNotFoundError(f"raw.parquet not found: {args.raw_path}")
+    if not args.labeled_path.exists():
+        raise FileNotFoundError(f"labeled.parquet not found: {args.labeled_path}")
 
     artifact = load_model(args.model_path)
     model = artifact["model"]
@@ -759,7 +771,7 @@ def main() -> None:
             (manifest["split"] == split_name) & (manifest["group_id"] == group_id)
         ]["AnonID"].unique()
 
-        df = load_group_queries(args.raw_path, group_users)
+        df = load_group_queries(args.labeled_path, group_users)
         df = cap_queries_per_user(df, args.max_queries_per_user)
 
         if df.empty:
@@ -770,6 +782,7 @@ def main() -> None:
         queries = df["Query"].to_numpy()
         query_times = df["QueryTime"].to_numpy()
         click_urls = df["ClickURL"].fillna("").to_numpy()
+        query_labels = df["QueryLabels"].tolist()
 
         scored_df, top_df, total_pairs, total_positives = score_all_pairs(
             feature_columns=feature_columns,
@@ -779,6 +792,7 @@ def main() -> None:
             queries=queries,
             query_times=query_times,
             click_urls=click_urls,
+            query_labels=query_labels,
             min_save_score=args.min_save_score,
             top_k=_TOP_K_PER_GROUP,
         )

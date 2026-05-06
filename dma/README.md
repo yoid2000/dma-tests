@@ -206,7 +206,7 @@ Main features in `train_pairs.parquet`:
 
 # Linkage Model Training And Scoring
 
-This pipeline learns a supervised pairwise linkage model that estimates the probability that two queries come from the same anonymized user. It combines lexical overlap, temporal proximity, query-shape, and click-URL signals in a gradient-boosted classifier, then calibrates the output with Platt scaling so scores are more interpretable as probabilities. In operation, the trained model is applied to large sets of query pairs within sampled user groups, and score thresholds are swept to expose precision-recall trade-offs for different matching objectives.
+This pipeline learns a supervised pairwise linkage model that estimates the probability that two queries come from the same anonymized user. It combines lexical overlap, temporal proximity, query-shape, click-URL, and label signals in a gradient-boosted classifier, then calibrates the output with Platt scaling so scores are more interpretable as probabilities. In operation, the trained model is applied to large sets of query pairs within sampled user groups, and score thresholds are swept to expose precision-recall trade-offs for different matching objectives.
 
 ## `linkage_run_all.py`
 
