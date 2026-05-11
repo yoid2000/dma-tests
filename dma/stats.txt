@@ -16,3 +16,169 @@ Predicting query pairs using Query, QueryTime (24hr) and ClickURL produced at be
 
   This pipeline learns a supervised pairwise linkage model that estimates the probability that two queries come from the same anonymized user. It combines lexical overlap, temporal proximity, query-shape, and click-URL signals in a gradient-boosted classifier, then calibrates the output with Platt scaling so scores are more interpretable as probabilities. In operation, the trained model is applied to large sets of query pairs within sampled user groups, and score thresholds are swept to expose precision-recall trade-offs for different matching objectives.
   
+
+  ----------------------------------------------------------
+  From join_estimate.py:
+  PS C:\paul\GitHub\dma-tests\dma> python .\join_estimate.py
+Population: 450,000,000
+Group size (N): 20,000
+Estimated number of groups: 22,500.00
+Target qualifying-access fraction (X): 80.0000%
+
+Per-person access probability (p): 0.00001116
+Expected total webpage accesses: 5,020.95
+Expected qualifying accesses (<=1 accessor/group): 4,016.76
+(.venv) PS C:\paul\GitHub\dma-tests\dma> python .\join_estimate.py --target-percent 90 
+Population: 450,000,000
+Group size (N): 20,000
+Estimated number of groups: 22,500.00
+Target qualifying-access fraction (X): 90.0000%
+
+Per-person access probability (p): 0.00000527
+Expected total webpage accesses: 2,370.72
+Expected qualifying accesses (<=1 accessor/group): 2,133.65
+(.venv) PS C:\paul\GitHub\dma-tests\dma> python .\join_estimate.py --target-percent 95
+Population: 450,000,000
+Group size (N): 20,000
+Estimated number of groups: 22,500.00
+Target qualifying-access fraction (X): 95.0000%
+
+Per-person access probability (p): 0.00000256
+Expected total webpage accesses: 1,154.16
+Expected qualifying accesses (<=1 accessor/group): 1,096.45
+
+We expect around 1TB of daily data for EU at 1kb per record. ChatGPT estimates around $5 daily to process this on AWS. Assume the attacker has 100 web-pages. This is then 100K queries, or negligible (1/200 of a cent per query).
+
+-----------------------------------------------------------------------------
+
+My estimate: **about 1 billion Google Search queries per day from the EU**, with a plausible rough range of **~0.8 to 1.5 billion/day**.
+
+There is no official public Google figure for “daily Google searches from the EU,” so this is a derived estimate.
+
+## Sources and calculation
+
+Google said in March 2025 that it sees **more than 5 trillion searches on Google annually**. That implies:
+
+```text
+5 trillion / 365 ≈ 13.7 billion Google searches per day globally
+```
+
+Google’s source note for that figure is “Google Internal Data, Jan 2025.” ([blog.google][1])
+
+For the EU side, Google’s DSA monthly-active-recipient report says **Google Search in the EU** had:
+
+```text
+364.3 million average monthly distinct signed-in accounts
+437.3 million average monthly distinguishable signed-out sessions
+```
+
+for January–June 2025. Google explicitly warns these counts are **not comprehensively de-duplicated**, so you should **not add them together** as unique users. 
+
+As a sanity check on the size of the EU online population: ITU estimated **5.5 billion people online globally in 2024**, and Eurostat reported that **93% of EU residents aged 16–74 used the internet in the previous three months in 2024**. ([ITU][2])
+
+A simple proportional estimate is:
+
+```text
+Global Google searches/day ≈ 13.7B
+EU Google Search active base ≈ 350M–450M
+Global internet users ≈ 5.5B
+
+EU share ≈ 350M–450M / 5.5B ≈ 6.4%–8.2%
+
+EU Google searches/day ≈ 13.7B × 6.4%–8.2%
+                     ≈ 0.9B–1.1B/day
+```
+
+Then I would widen that to **~0.8–1.5B/day** because EU users may search more often than the global average, but the DSA recipient numbers can also overcount individuals.
+
+So the clean answer is:
+
+> **Rough estimate: around 1 billion Google searches per day from the EU.**
+> I would not treat it as more precise than “hundreds of millions to low billions per day.”
+
+[1]: https://blog.google/products/ads-commerce/ai-personalization-and-the-future-of-shopping/ "AI, personalization and the future of shopping"
+[2]: https://www.itu.int/en/mediacentre/Pages/PR-2024-11-27-facts-and-figures.aspx?utm_source=chatgpt.com "Press Release - ITU"
+
+
+https://storage.googleapis.com/transparencyreport/report-downloads/pdf-report-24_2025-1-1_2025-6-30_en_v1.pdf
+
+
+Using 1B daily searches, assuming 1kb per record, we get 1Tbyte of transmission daily.
+
+According to ChatGPT, processing this would cost around 5$ per day on AWS:
+
+Given **negligible output** and **immediate deletion**, I’d estimate:
+
+> **~$1–$6 total on AWS for 1 TB**, depending on how you implement it.
+> My personal “reasonable budget” would be **about $3–$5**.
+
+The big costs mostly disappear because inbound transfer to S3 is free, S3 charges storage by object size and how long it is stored, and DELETE requests are free. You would still pay small S3 request charges and compute while the scan runs. ([Amazon Web Services, Inc.][1])
+
+## Option A: stream to EC2 and scan directly
+
+This is likely the cheapest if you can arrange it.
+
+```text
+Internet upload into EC2/S3:     ~$0
+EC2 compute for a few hours:     ~$0.25–$2
+Temporary disk, if needed:       ~$0–$1
+Output storage/transfer:         negligible
+Estimated total:                 ~$1–$3
+```
+
+A modest EC2 instance such as `m7i.large` is listed around **$0.1008/hour** in us-east-1 by Vantage’s AWS instance tracker; AWS’s own EC2 pricing page states On-Demand instances are billed by hour/second with no long-term commitment. ([Vantage][2])
+
+## Option B: upload chunks to S3, process, delete each chunk
+
+This is probably the easiest robust setup.
+
+```text
+Inbound data transfer:           ~$0
+S3 temporary storage:            near $0
+S3 PUT/GET requests:             cents, unless using tiny chunks
+EC2/Lambda/Batch compute:        ~$0.50–$3
+Estimated total:                 ~$1–$5
+```
+
+Request cost depends on chunk size. Roughly:
+
+| Chunk size | Number of chunks for 1 TB | S3 request cost order of magnitude |
+| ---------: | ------------------------: | ---------------------------------: |
+|       1 GB |                    ~1,000 |                              cents |
+|     100 MB |                   ~10,000 |                              cents |
+|      10 MB |                  ~100,000 |                maybe tens of cents |
+|       1 MB |                ~1,000,000 |                      a few dollars |
+
+Use **S3 Standard**, not S3 Standard-IA or Glacier classes, because some cheaper storage classes have minimum storage-duration charges if deleted early. AWS’s S3 page notes 30-day minimums for Standard-IA / One Zone-IA and longer minimums for Glacier classes. ([Amazon Web Services, Inc.][1])
+
+## Option C: S3 + Athena
+
+This is very simple if the string search can be expressed in SQL.
+
+```text
+Athena scan of 1 TB:             ~$5
+Temporary S3 storage:            near $0
+S3 requests/results:             negligible
+Estimated total:                 ~$5–$6
+```
+
+AWS’s Athena pricing example uses **$5 per TB scanned**: a 3 TB text scan costs $15, and a 1 TB compressed scan costs $5. ([Amazon Web Services, Inc.][3])
+
+## Avoid this gotcha
+
+Do **not** use S3 Transfer Acceleration unless you really need it. AWS lists accelerated data transfer into S3 from the internet at **$0.04/GB** from edge locations in the US, Europe, and Japan, which would add about **$40** for 1 TB. ([Amazon Web Services, Inc.][1])
+
+So the concise estimate is:
+
+```text
+Cheapest custom streaming approach:   ~$1–$3
+S3 chunked + custom processing:        ~$1–$5
+Athena one-shot scan:                  ~$5–$6
+```
+
+I’d budget **$5** unless you need engineering convenience, in which case **Athena at around $5–$6** is a clean mental model.
+
+[1]: https://aws.amazon.com/s3/pricing/ "S3 Pricing"
+[2]: https://instances.vantage.sh/aws/ec2/m7i.large?utm_source=chatgpt.com "m7i.large pricing and specs - Vantage"
+[3]: https://aws.amazon.com/athena/pricing/ "Amazon Athena Pricing"
+
